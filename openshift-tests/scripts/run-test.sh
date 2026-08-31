@@ -16,6 +16,18 @@ matches_stop_pattern() {
     fi
 }
 
+# True if the focused test itself reported failure in the test log.
+# openshift-tests prints one line per test: '<ts> failed: (<dur>) <ts> "<full name>"'.
+# A 'failed: (' line that also contains the focus substring means THIS test failed
+# -- unlike a MonitorTest/suite-level failure, which does not emit such a line, so
+# this avoids false stops on monitor-only failures (which still make rc != 0).
+test_failed_in_log() {
+    local focus="$1"
+    local file="$2"
+    [[ -f "${file}" ]] || return 1
+    grep -F 'failed: (' "${file}" 2>/dev/null | grep -Fq -- "${focus}"
+}
+
 usage() {
     cat <<'EOF'
 Usage:
@@ -26,7 +38,9 @@ Options:
   --repeat N                  Repeat full test list up to N times (default: 1).
   --timeout DURATION          openshift-tests timeout per run (default: 60m).
   --name LABEL                Session label prefix under scratch/runs/ (default: tnf-two-node).
-  --stop-on-match "text"      Stop early if raw test log contains this text.
+  --stop-on-match "text"      Stop early if the test log contains this text.
+  --stop-on-fail              Stop early if the focused test itself reports failure
+                              (ignores monitor-only/suite failures).
   --with-captures             Start run-all-captures.sh per run (default).
   --no-captures               Do not start captures.
   --wait-for-cluster          Poll until cluster is ready before running tests.
@@ -121,6 +135,7 @@ TEST_TIMEOUT="${TEST_TIMEOUT:-60m}"
 SESSION_NAME="tnf-two-node"
 WITH_CAPTURES=1
 STOP_ON_MATCH="${STOP_ON_MATCH:-}"
+STOP_ON_FAIL=0
 WAIT_FOR_CLUSTER=0
 POLL_SEC="${POLL_SEC:-900}"
 MIN_NODES="${MIN_NODES:-2}"
@@ -152,6 +167,10 @@ while [[ $# -gt 0 ]]; do
             [[ $# -lt 2 ]] && { echo "Missing value for --stop-on-match"; exit 1; }
             STOP_ON_MATCH="$2"
             shift 2
+            ;;
+        --stop-on-fail)
+            STOP_ON_FAIL=1
+            shift
             ;;
         --with-captures)
             WITH_CAPTURES=1
@@ -291,6 +310,7 @@ log "Session dir: ${SESSION_DIR}"
 log "Tests per iteration: ${#TEST_FOCUSES[@]}, repeat: ${REPEAT_COUNT}, captures: ${WITH_CAPTURES}"
 log "openshift-tests (baremetalds-two-node-fencing-recovery): --disable-monitor=${OPENSHIFT_TESTS_DISABLE_MONITORS:-} --cluster-stability=${OPENSHIFT_TESTS_CLUSTER_STABILITY:-}"
 [[ -n "${STOP_ON_MATCH}" ]] && log "Will stop early on match: ${STOP_ON_MATCH}"
+[[ "${STOP_ON_FAIL}" -eq 1 ]] && log "Will stop early if a focused test reports failure."
 
 stop_requested=0
 
@@ -419,12 +439,18 @@ else
         printf "%s\t%s\t%s\t%s\t%s\n" \
             "${iter}" "${test_num}" "${result}" "${run_dir}" "${focus}" >> "${SUMMARY_FILE}"
 
-        if [[ -n "${STOP_ON_MATCH}" ]] && [[ -f "${raw_log}" ]]; then
-            if matches_stop_pattern "${STOP_ON_MATCH}" "${raw_log}"; then
-                log "Stop pattern matched in ${raw_log}" | tee -a "${console_log}"
+        if [[ -n "${STOP_ON_MATCH}" ]] && [[ -f "${timed_log}" ]]; then
+            if matches_stop_pattern "${STOP_ON_MATCH}" "${timed_log}"; then
+                log "Stop pattern matched in ${timed_log}" | tee -a "${console_log}"
                 stop_requested=1
                 break
             fi
+        fi
+
+        if [[ "${STOP_ON_FAIL}" -eq 1 ]] && test_failed_in_log "${focus}" "${timed_log}"; then
+            log "Focused test reported failure; stopping early (--stop-on-fail): ${focus}" | tee -a "${console_log}"
+            stop_requested=1
+            break
         fi
         done
         [[ "${stop_requested}" -eq 1 ]] && break
