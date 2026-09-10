@@ -16,7 +16,7 @@ if [[ -n "${1:-}" ]]; then
         PID_FILE="${LOG_DIR}/capture-pids-${1}.txt"
     fi
 else
-    PID_FILE=$(ls -t "${LOG_DIR}"/capture-pids-*.txt 2>/dev/null | head -1)
+    PID_FILE=$(find "${LOG_DIR}" -maxdepth 1 -name 'capture-pids-*.txt' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
 fi
 
 if [[ -z "${PID_FILE}" ]] || [[ ! -f "${PID_FILE}" ]]; then

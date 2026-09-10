@@ -63,10 +63,10 @@ else
 
             # Check for junit results
             if [[ -d "${test_dir}/test/junit" ]]; then
-                junit_files=$(find "${test_dir}/test/junit" -name "*.xml" 2>/dev/null)
-                if [[ -n "$junit_files" ]]; then
+                mapfile -t junit_files < <(find "${test_dir}/test/junit" -name "*.xml" 2>/dev/null)
+                if [[ ${#junit_files[@]} -gt 0 ]]; then
                     # Check for failures in junit
-                    failures=$(grep -h 'failures="' $junit_files 2>/dev/null | grep -v 'failures="0"' | wc -l)
+                    failures=$(grep -h 'failures="' "${junit_files[@]}" 2>/dev/null | grep -cv 'failures="0"')
                     if [[ $failures -gt 0 ]]; then
                         echo "  FAIL: $test_name"
                         FAIL=$((FAIL + 1))

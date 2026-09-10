@@ -48,6 +48,9 @@ fi
 
 HYPERVISOR_SSH=(ssh -o "ConnectTimeout=12" -o "StrictHostKeyChecking=no" -i "${SSH_KEY_PATH}" "${SSH_USER}@${HYPERVISOR_IP}")
 
+# Single quotes are intentional: the command substitution must be evaluated on
+# the remote host, not locally.
+# shellcheck disable=SC2016
 OVS_CMD='sudo ovs-vsctl --if-exists get Open_vSwitch . external_ids:system-id 2>&1; echo " ovs_hostname=$(sudo ovs-vsctl --if-exists get Open_vSwitch . external_ids:hostname 2>&1 | tr -d "\n")"'
 
 resolve_master_ip_from_leases() {

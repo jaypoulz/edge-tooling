@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"; }
-log() { printf "%s %s\n" "$(ts)" "$*"; }
+log() { printf "%s %s\\n" "$(ts)" "$*"; }
 matches_stop_pattern() {
     local pattern="$1"
     local file="$2"
@@ -251,11 +251,11 @@ fi
 
 DISABLE_MONITOR_ARGS=()
 if [[ -n "${OPENSHIFT_TESTS_DISABLE_MONITORS}" ]]; then
-    DISABLE_MONITOR_ARGS+=(--disable-monitor="${OPENSHIFT_TESTS_DISABLE_MONITORS}")
+    DISABLE_MONITOR_ARGS+=("--disable-monitor=${OPENSHIFT_TESTS_DISABLE_MONITORS}")
 fi
 CLUSTER_STABILITY_ARGS=()
 if [[ -n "${OPENSHIFT_TESTS_CLUSTER_STABILITY}" ]]; then
-    CLUSTER_STABILITY_ARGS+=(--cluster-stability="${OPENSHIFT_TESTS_CLUSTER_STABILITY}")
+    CLUSTER_STABILITY_ARGS+=("--cluster-stability=${OPENSHIFT_TESTS_CLUSTER_STABILITY}")
 fi
 
 if [[ -n "${OPENSHIFT_TESTS_EXTRA_ARGS:-}" ]]; then
@@ -303,7 +303,7 @@ fi
 SUMMARY_FILE="${SESSION_DIR}/summary.tsv"
 # Create summary header if it doesn't exist
 if [[ ! -f "${SUMMARY_FILE}" ]]; then
-    printf "iter\ttest_index\tresult\trun_dir\tfocus\n" > "${SUMMARY_FILE}"
+    printf "iter\\ttest_index\\tresult\\trun_dir\\tfocus\\n" > "${SUMMARY_FILE}"
 fi
 
 log "Session dir: ${SESSION_DIR}"
@@ -335,7 +335,6 @@ if [[ ${REPEAT_COUNT} -eq 1 ]] && [[ ${#TEST_FOCUSES[@]} -gt 1 ]]; then
     run_dir="${SESSION_DIR}/iter-01-all-tests-${run_ts}"
     mkdir -p "${run_dir}/test" "${run_dir}/captures"
 
-    raw_log="${run_dir}/test/openshift-tests-raw.log"
     timed_log="${run_dir}/test/openshift-tests-timestamped.log"
     console_log="${run_dir}/test/runner.log"
     junit_dir="${run_dir}/test/junit"
@@ -378,7 +377,7 @@ if [[ ${REPEAT_COUNT} -eq 1 ]] && [[ ${#TEST_FOCUSES[@]} -gt 1 ]]; then
     fi
 
     # Record to summary - one line for the batch
-    printf "%d\t%s\t%s\t%s\t%s\n" \
+    printf "%d\\t%s\\t%s\\t%s\\t%s\\n" \
         "${iter}" "ALL" "${result}" "${run_dir}" "Multiple tests (${#TEST_FOCUSES[@]} total)" >> "${SUMMARY_FILE}"
 
 else
@@ -394,7 +393,6 @@ else
         run_dir="${SESSION_DIR}/iter-$(printf "%02d" "${iter}")-test-$(printf "%02d" "${test_num}")-${run_ts}-${run_slug}"
         mkdir -p "${run_dir}/test" "${run_dir}/captures"
 
-        raw_log="${run_dir}/test/openshift-tests-raw.log"
         timed_log="${run_dir}/test/openshift-tests-timestamped.log"
         console_log="${run_dir}/test/runner.log"
         junit_dir="${run_dir}/test/junit"
@@ -436,7 +434,7 @@ else
             log "Captures stopped for run." | tee -a "${console_log}"
         fi
 
-        printf "%s\t%s\t%s\t%s\t%s\n" \
+        printf "%s\\t%s\\t%s\\t%s\\t%s\\n" \
             "${iter}" "${test_num}" "${result}" "${run_dir}" "${focus}" >> "${SUMMARY_FILE}"
 
         if [[ -n "${STOP_ON_MATCH}" ]] && [[ -f "${timed_log}" ]]; then

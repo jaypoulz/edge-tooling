@@ -1,4 +1,4 @@
-#\!/bin/bash
+#!/bin/bash
 #
 # List tests from a suite with optional filtering
 #
@@ -13,6 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source shared test helpers
+# shellcheck source=/dev/null
 source "${SCRIPT_DIR}/test-helpers.sh"
 
 SUITE="openshift/two-node"

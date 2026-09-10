@@ -116,7 +116,7 @@ case "${MODE}" in
             exit 1
         fi
         echo "Finding runs to delete (keeping ${KEEP_COUNT} most recent)..."
-        mapfile -t ALL_RUNS < <(find "${RUN_DIR}" -mindepth 1 -maxdepth 1 -type d -printf "%T@ %p\n" | sort -rn | cut -d' ' -f2-)
+        mapfile -t ALL_RUNS < <(find "${RUN_DIR}" -mindepth 1 -maxdepth 1 -type d -printf "%T@ %p\\n" | sort -rn | cut -d' ' -f2-)
         if [[ ${#ALL_RUNS[@]} -gt ${KEEP_COUNT} ]]; then
             TO_DELETE=("${ALL_RUNS[@]:${KEEP_COUNT}}")
         fi
@@ -128,14 +128,14 @@ case "${MODE}" in
         if [[ "${OLDER_THAN}" =~ ^([0-9]+)m$ ]]; then
             MINUTES="${BASH_REMATCH[1]}"
         elif [[ "${OLDER_THAN}" =~ ^([0-9]+)h$ ]]; then
-            MINUTES=$((${BASH_REMATCH[1]} * 60))
+            MINUTES=$((BASH_REMATCH[1] * 60))
         elif [[ "${OLDER_THAN}" =~ ^([0-9]+)d$ ]]; then
-            MINUTES=$((${BASH_REMATCH[1]} * 1440))
+            MINUTES=$((BASH_REMATCH[1] * 1440))
         else
             echo "Error: Duration must be in format: 30m, 24h, or 7d"
             exit 1
         fi
-        mapfile -t TO_DELETE < <(find "${RUN_DIR}" -mindepth 1 -maxdepth 1 -type d -mmin +${MINUTES} | sort)
+        mapfile -t TO_DELETE < <(find "${RUN_DIR}" -mindepth 1 -maxdepth 1 -type d -mmin "+${MINUTES}" | sort)
         ;;
     pattern)
         echo "Finding runs matching pattern: ${PATTERN}..."

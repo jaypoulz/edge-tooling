@@ -1,4 +1,4 @@
-#\!/bin/bash
+#!/bin/bash
 #
 # Test suite runner
 #
@@ -10,6 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source shared test helpers
+# shellcheck source=/dev/null
 source "${SCRIPT_DIR}/test-helpers.sh"
 
 SCRATCH_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -164,7 +165,7 @@ if [[ -z "$SESSION_NAME" ]]; then
     if [[ -n "${PROFILE}" ]]; then
         SESSION_NAME="${PROFILE}-suite"
     else
-        SUITE_NAME=$(echo "${SUITE}" | sed 's|/|-|g')
+        SUITE_NAME="${SUITE//\//-}"
         SESSION_NAME="${SUITE_NAME}-suite"
     fi
 fi
@@ -205,11 +206,12 @@ if [[ "${RUN_MODE}" == "upgrade" ]]; then
     DISABLE_MONITOR_ARGS=()
     CLUSTER_STABILITY_ARGS=()
     if [[ -n "${OPENSHIFT_TESTS_DISABLE_MONITORS:-}" ]]; then
-        DISABLE_MONITOR_ARGS+=(--disable-monitor="${OPENSHIFT_TESTS_DISABLE_MONITORS}")
+        DISABLE_MONITOR_ARGS+=("--disable-monitor=${OPENSHIFT_TESTS_DISABLE_MONITORS}")
     fi
     if [[ -n "${OPENSHIFT_TESTS_CLUSTER_STABILITY:-}" ]]; then
-        CLUSTER_STABILITY_ARGS+=(--cluster-stability="${OPENSHIFT_TESTS_CLUSTER_STABILITY}")
+        CLUSTER_STABILITY_ARGS+=("--cluster-stability=${OPENSHIFT_TESTS_CLUSTER_STABILITY}")
     fi
+    read -ra EXTRA_ARGS <<< "${OPENSHIFT_TESTS_EXTRA_ARGS:-}"
 
     SESSION_TS="$(date -u +%Y%m%d-%H%M%S)"
     SESSION_DIR="${RUNS_ROOT}/${SESSION_NAME}-${SESSION_TS}"
@@ -240,9 +242,9 @@ if [[ "${RUN_MODE}" == "upgrade" ]]; then
         --timeout=120m \
         -o "${RAW_LOG}" \
         --junit-dir "${JUNIT_DIR}" \
-        ${OPENSHIFT_TESTS_EXTRA_ARGS:-} \
+        "${EXTRA_ARGS[@]}" \
         2>&1 | while IFS= read -r line; do
-            printf "%s %s\n" "$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")" "${line}"
+            printf "%s %s\\n" "$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")" "${line}"
         done | tee -a "${TIMED_LOG}" >> "${CONSOLE_LOG}"
     TEST_STATUS=${PIPESTATUS[0]}
     set -e
@@ -345,7 +347,7 @@ if [[ "${INTERACTIVE}" != "true" ]]; then
     SESSION_DIR="${RUNS_ROOT}/${SESSION_NAME}-${SESSION_TS}"
     mkdir -p "${SESSION_DIR}"
     SUMMARY_FILE="${SESSION_DIR}/summary.tsv"
-    printf "iter\ttest_index\tresult\trun_dir\tfocus\n" > "${SUMMARY_FILE}"
+    printf "iter\\ttest_index\\tresult\\trun_dir\\tfocus\\n" > "${SUMMARY_FILE}"
 
     # Setup test provider
     setup_test_provider
@@ -364,12 +366,13 @@ if [[ "${INTERACTIVE}" != "true" ]]; then
     CLUSTER_STABILITY_ARGS=()
 
     if [[ -n "${OPENSHIFT_TESTS_DISABLE_MONITORS:-}" ]]; then
-        DISABLE_MONITOR_ARGS+=(--disable-monitor="${OPENSHIFT_TESTS_DISABLE_MONITORS}")
+        DISABLE_MONITOR_ARGS+=("--disable-monitor=${OPENSHIFT_TESTS_DISABLE_MONITORS}")
     fi
 
     if [[ -n "${OPENSHIFT_TESTS_CLUSTER_STABILITY:-}" ]]; then
-        CLUSTER_STABILITY_ARGS+=(--cluster-stability="${OPENSHIFT_TESTS_CLUSTER_STABILITY}")
+        CLUSTER_STABILITY_ARGS+=("--cluster-stability=${OPENSHIFT_TESTS_CLUSTER_STABILITY}")
     fi
+    read -ra EXTRA_ARGS <<< "${OPENSHIFT_TESTS_EXTRA_ARGS:-}"
 
     # Repeat the ENTIRE suite N times
     for ((iter=1; iter<=REPEAT; iter++)); do
@@ -413,9 +416,9 @@ if [[ "${INTERACTIVE}" != "true" ]]; then
             --timeout=60m \
             -o "${RAW_LOG}" \
             --junit-dir "${JUNIT_DIR}" \
-            ${OPENSHIFT_TESTS_EXTRA_ARGS:-} \
+            "${EXTRA_ARGS[@]}" \
             2>&1 | while IFS= read -r line; do
-                printf "%s %s\n" "$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")" "${line}"
+                printf "%s %s\\n" "$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")" "${line}"
             done | tee -a "${TIMED_LOG}" >> "${CONSOLE_LOG}"
         TEST_STATUS=${PIPESTATUS[0]}
         set -e
@@ -431,7 +434,7 @@ if [[ "${INTERACTIVE}" != "true" ]]; then
         # Record to summary
         RESULT="PASS"
         [[ "${TEST_STATUS}" -ne 0 ]] && RESULT="FAIL(${TEST_STATUS})"
-        printf "%d\tALL\t%s\t%s\t%s\n" "${iter}" "${RESULT}" "${RUN_DIR}" "${SUITE} (${TOTAL_TESTS} tests)" >> "${SUMMARY_FILE}"
+        printf "%d\\tALL\\t%s\\t%s\\t%s\\n" "${iter}" "${RESULT}" "${RUN_DIR}" "${SUITE} (${TOTAL_TESTS} tests)" >> "${SUMMARY_FILE}"
 
         if [[ $TEST_STATUS -eq 0 ]]; then
             log_info "✓ Iteration ${iter}/${REPEAT} passed"

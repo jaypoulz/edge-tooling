@@ -18,6 +18,7 @@ ts() { date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"; }
 # Source proxy.env if available for KUBECONFIG
 PROXY_ENV="${PROXY_ENV:?PROXY_ENV must be set to the cluster proxy.env path (e.g. <two-node-toolbox-deploy>/openshift-clusters/proxy.env)}"
 if [[ -f "${PROXY_ENV}" ]]; then
+    # shellcheck source=/dev/null
     set -a && source "${PROXY_ENV}" && set +a
 fi
 
@@ -88,8 +89,8 @@ while true; do
     fi
 
     # Get recent CEO errors (only lines with update-setup or job-related errors)
-    ceo_relevant=$(oc logs -n openshift-etcd-operator deployment/etcd-operator --tail=30 --since=${POLL_SEC}s 2>/dev/null \
-        | grep -i "update-setup\|tnf.*job\|job.*failed\|job.*complete\|getActivePacemakerNodes\|schedulableNodesFunc" \
+    ceo_relevant=$(oc logs -n openshift-etcd-operator deployment/etcd-operator --tail=30 --since="${POLL_SEC}s" 2>/dev/null \
+        | grep -i "update-setup\\|tnf.*job\\|job.*failed\\|job.*complete\\|getActivePacemakerNodes\\|schedulableNodesFunc" \
         | tail -5 || echo "")
 
     if [[ -n "${ceo_relevant}" ]]; then

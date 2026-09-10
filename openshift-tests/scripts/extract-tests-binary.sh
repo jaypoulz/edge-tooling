@@ -12,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_BIN_DIR="${SCRIPT_DIR}/../tests-bin"
 
 # Source shared helpers for logging
+# shellcheck source=/dev/null
 source "${SCRIPT_DIR}/test-helpers.sh"
 
 # Check for proxy.env
@@ -25,6 +26,7 @@ fi
 # Source proxy.env
 log_info "Loading proxy.env..."
 set -a
+# shellcheck source=/dev/null
 source "${PROXY_ENV}"
 set +a
 

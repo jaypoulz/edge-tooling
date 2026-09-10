@@ -11,19 +11,19 @@ ts() {
 }
 
 log() {
-    printf "%s %s\n" "$(ts)" "$*"
+    printf "%s %s\\n" "$(ts)" "$*"
 }
 
 log_info() {
-    echo -e "\033[0;32mINFO:\033[0m $*"
+    echo -e "\\033[0;32mINFO:\\033[0m $*"
 }
 
 log_warn() {
-    echo -e "\033[1;33mWARN:\033[0m $*"
+    echo -e "\\033[1;33mWARN:\\033[0m $*"
 }
 
 log_error() {
-    echo -e "\033[0;31mERROR:\033[0m $*"
+    echo -e "\\033[0;31mERROR:\\033[0m $*"
 }
 
 sanitize_name() {
@@ -48,7 +48,8 @@ setup_test_directories() {
         return 1
     fi
 
-    export SCRATCH_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+    SCRATCH_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+    export SCRATCH_ROOT
     export RUN_DIR="${SCRATCH_ROOT}/runs"
     export TESTS_BIN_DIR="${SCRATCH_ROOT}/tests-bin"
 
@@ -246,12 +247,12 @@ setup_monitor_configuration() {
 
     # Build monitor arguments array (caller should declare DISABLE_MONITOR_ARGS)
     if [[ -n "${OPENSHIFT_TESTS_DISABLE_MONITORS}" ]]; then
-        DISABLE_MONITOR_ARGS+=(--disable-monitor="${OPENSHIFT_TESTS_DISABLE_MONITORS}")
+        DISABLE_MONITOR_ARGS+=("--disable-monitor=${OPENSHIFT_TESTS_DISABLE_MONITORS}")
     fi
 
     # Build cluster stability arguments array (caller should declare CLUSTER_STABILITY_ARGS)
     if [[ -n "${OPENSHIFT_TESTS_CLUSTER_STABILITY}" ]]; then
-        CLUSTER_STABILITY_ARGS+=(--cluster-stability="${OPENSHIFT_TESTS_CLUSTER_STABILITY}")
+        CLUSTER_STABILITY_ARGS+=("--cluster-stability=${OPENSHIFT_TESTS_CLUSTER_STABILITY}")
     fi
 }
 
@@ -285,6 +286,9 @@ resolve_profile() {
     PROFILE_FILTER=""
     PROFILE_MODE="run"
 
+    # PROFILE_SUITE/PROFILE_FILTER/PROFILE_MODE are consumed by scripts that
+    # source this file (e.g. list-tests.sh, run-suite.sh) after calling resolve_profile.
+    # shellcheck disable=SC2034
     case "${profile}" in
         e2e)           PROFILE_SUITE="openshift/conformance/parallel" ;;
         recovery)      PROFILE_SUITE="openshift/two-node" ;;
