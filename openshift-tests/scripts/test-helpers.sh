@@ -260,17 +260,32 @@ setup_monitor_configuration() {
 # Test Profiles
 # ============================================================================
 # A profile is a friendly name that maps to a test target:
-#   PROFILE_SUITE    - openshift-tests suite to run/list
-#   PROFILE_FILTER   - default name/label regex to narrow the suite ("" = none)
-#   PROFILE_MODE     - "run" (openshift-tests run <suite>) or
-#                      "upgrade" (openshift-tests run-upgrade, needs --to-image)
-#   PROFILE_RUN_LAST - regex of tests to force to the END of the run order
-#                      ("" = none). Used to keep destructive tests (e.g. node
-#                      replacement, which reprovisions a node and overwrites its
-#                      resource-agent) from clobbering the build the earlier tests
-#                      are exercising. Callers reorder the discovered test list so
-#                      matching tests run last, then pass the ordered list to
-#                      openshift-tests via --file to pin the order.
+#   PROFILE_SUITE            - openshift-tests suite to RUN (and to list, unless
+#                              PROFILE_DISCOVER_SUITES is set). When tests are
+#                              curated from several suites, this must be a
+#                              superset that contains them all (e.g. "all").
+#   PROFILE_FILTER           - default name/label regex to narrow the suite
+#                              ("" = none)
+#   PROFILE_MODE             - "run" (openshift-tests run <suite>) or
+#                              "upgrade" (openshift-tests run-upgrade, needs
+#                              --to-image)
+#   PROFILE_DISCOVER_SUITES  - space-separated list of suites to DISCOVER test
+#                              names from ("" = just PROFILE_SUITE). Lets a
+#                              profile pull tests from more than one suite; the
+#                              union is then pinned via --file against
+#                              PROFILE_SUITE (which must contain them all).
+#   PROFILE_EXCLUDE          - regex of tests to DROP from the discovered set
+#                              ("" = none). Used to omit destructive tests such
+#                              as node replacement, which reprovisions a master
+#                              from the base image and reverts its patched
+#                              resource-agents RPM to stock -- producing a mixed
+#                              build across the two masters. Excluding it keeps
+#                              every node on the same build for the whole run.
+#                              (Note: origin shuffles the surviving set with a
+#                              hardcoded seed and offers no order-preserving
+#                              flag, so we exclude rather than try to run-last.)
+#   PROFILE_GATHER_RA        - "true" to query resource-agents RPM versions on
+#                              both masters after the run (mixed-build check).
 #
 # Callers read those vars after a successful `resolve_profile <name>`.
 # --suite / --filter on the command line always override the profile defaults.
@@ -278,32 +293,42 @@ setup_monitor_configuration() {
 # Suites marked (runtime-verify) below should be confirmed against the target
 # cluster once with: openshift-tests run <suite> --dry-run
 #
-#   e2e            openshift/conformance/parallel
-#   recovery       openshift/two-node
-#   dualreplica    all tests, filtered to the DualReplica feature gate
-#                  ([OCPFeatureGate:DualReplica]) — deliberately NOT limited to
-#                  openshift/two-node, so DualReplica tests are found wherever
-#                  they live.
-#   cert-rotation  openshift/etcd/certrotation      (runtime-verify)
-#   upgrade        all, via run-upgrade             (runtime-verify; --to-image)
+#   e2e             openshift/conformance/parallel
+#   recovery        openshift/two-node (all recovery tests, incl. node
+#                   replacement); gathers resource-agents versions afterward.
+#   ra-verification openshift/etcd/certrotation + openshift/two-node, EXCLUDING
+#                   node replacement -- exercises the resource-agents across the
+#                   cert-rotation and recovery surface without ever reprovisioning
+#                   a node, so both masters stay on the same build. (runtime-verify)
+#   dualreplica     all tests, filtered to the DualReplica feature gate
+#                   ([OCPFeatureGate:DualReplica]) — deliberately NOT limited to
+#                   openshift/two-node, so DualReplica tests are found wherever
+#                   they live.
+#   cert-rotation   openshift/etcd/certrotation      (runtime-verify)
+#   upgrade         all, via run-upgrade             (runtime-verify; --to-image)
 
 resolve_profile() {
     local profile="$1"
     PROFILE_SUITE=""
     PROFILE_FILTER=""
     PROFILE_MODE="run"
-    PROFILE_RUN_LAST=""
+    PROFILE_DISCOVER_SUITES=""
+    PROFILE_EXCLUDE=""
+    PROFILE_GATHER_RA="false"
 
-    # PROFILE_SUITE/PROFILE_FILTER/PROFILE_MODE/PROFILE_RUN_LAST are consumed by
-    # scripts that source this file (e.g. list-tests.sh, run-suite.sh) after
-    # calling resolve_profile.
+    # PROFILE_* vars are consumed by scripts that source this file (e.g.
+    # list-tests.sh, run-suite.sh) after calling resolve_profile.
     # shellcheck disable=SC2034
     case "${profile}" in
-        e2e)           PROFILE_SUITE="openshift/conformance/parallel" ;;
-        recovery)      PROFILE_SUITE="openshift/two-node"; PROFILE_RUN_LAST="needing manual recovery is replaced" ;;
-        dualreplica)   PROFILE_SUITE="all"; PROFILE_FILTER="DualReplica" ;;
-        cert-rotation) PROFILE_SUITE="openshift/etcd/certrotation" ;;
-        upgrade)       PROFILE_SUITE="all"; PROFILE_MODE="upgrade" ;;
+        e2e)             PROFILE_SUITE="openshift/conformance/parallel" ;;
+        recovery)        PROFILE_SUITE="openshift/two-node"; PROFILE_GATHER_RA="true" ;;
+        ra-verification) PROFILE_SUITE="all"
+                         PROFILE_DISCOVER_SUITES="openshift/etcd/certrotation openshift/two-node"
+                         PROFILE_EXCLUDE="needing manual recovery is replaced"
+                         PROFILE_GATHER_RA="true" ;;
+        dualreplica)     PROFILE_SUITE="all"; PROFILE_FILTER="DualReplica" ;;
+        cert-rotation)   PROFILE_SUITE="openshift/etcd/certrotation" ;;
+        upgrade)         PROFILE_SUITE="all"; PROFILE_MODE="upgrade" ;;
         *)
             log_error "Unknown profile: ${profile}"
             list_profiles
@@ -316,11 +341,13 @@ resolve_profile() {
 list_profiles() {
     cat <<'PROFILES'
 Profiles (--profile NAME):
-  e2e            openshift/conformance/parallel
-  recovery       openshift/two-node
-  dualreplica    all tests filtered to [OCPFeatureGate:DualReplica]
-  cert-rotation  openshift/etcd/certrotation      (verify against cluster)
-  upgrade        run-upgrade (requires --to-image / UPGRADE_TO_IMAGE)
+  e2e             openshift/conformance/parallel
+  recovery        openshift/two-node (all recovery tests, incl. node replacement)
+  ra-verification openshift/etcd/certrotation + openshift/two-node, minus node
+                  replacement (no reprovision -> no mixed build)
+  dualreplica     all tests filtered to [OCPFeatureGate:DualReplica]
+  cert-rotation   openshift/etcd/certrotation      (verify against cluster)
+  upgrade         run-upgrade (requires --to-image / UPGRADE_TO_IMAGE)
 PROFILES
 }
 

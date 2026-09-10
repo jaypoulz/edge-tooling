@@ -38,7 +38,9 @@ PROFILE=""
 SUITE_SET=false
 FILTER_SET=false
 RUN_MODE="run"
-RUN_LAST=""
+DISCOVER_SUITES=""
+EXCLUDE=""
+GATHER_RA="false"
 UPGRADE_TO_IMAGE="${UPGRADE_TO_IMAGE:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -116,6 +118,10 @@ EXAMPLES:
     # Run all two-node recovery tests without captures (batch mode)
     $0 --profile recovery
 
+    # Verify resource-agents across cert-rotation + two-node WITHOUT node
+    # replacement (no reprovision, so both masters stay on the same build)
+    $0 --profile ra-verification
+
     # Run every DualReplica feature test across all suites, with captures
     $0 --profile dualreplica --with-captures
 
@@ -155,7 +161,9 @@ if [[ -n "${PROFILE}" ]]; then
         exit 1
     fi
     RUN_MODE="${PROFILE_MODE}"
-    RUN_LAST="${PROFILE_RUN_LAST:-}"
+    DISCOVER_SUITES="${PROFILE_DISCOVER_SUITES:-}"
+    EXCLUDE="${PROFILE_EXCLUDE:-}"
+    GATHER_RA="${PROFILE_GATHER_RA:-false}"
     [[ "${SUITE_SET}" == "false" ]] && SUITE="${PROFILE_SUITE}"
     if [[ "${FILTER_SET}" == "false" && -n "${PROFILE_FILTER}" ]]; then
         FILTER="${PROFILE_FILTER}"
@@ -264,55 +272,61 @@ if [[ "${RUN_MODE}" == "upgrade" ]]; then
     exit "${TEST_STATUS}"
 fi
 
-log_info "Discovering tests in suite: ${SUITE}"
-if [[ "${FILTER}" != "." ]]; then
-    log_info "Filter pattern: ${FILTER}"
-fi
+# Suites to DISCOVER test names from. A profile may curate tests from several
+# suites (e.g. cert-rotation + two-node); in that case the actual run uses
+# ${SUITE} (a superset such as 'all') restricted to the discovered union via
+# --file. Defaults to just ${SUITE}.
+# shellcheck disable=SC2206  # intentional word-splitting into an array
+DISCOVER_LIST=(${DISCOVER_SUITES:-${SUITE}})
 
-mapfile -t TESTS < <("${TESTS_BIN}" run "${SUITE}" \
-    --provider "${TEST_PROVIDER}" \
-    --with-hypervisor-json="${HYPERVISOR_JSON}" \
-    --dry-run 2>&1 | \
-    grep '^"' | \
-    sed 's/^"\(.*\)"$/\1/' | \
-    grep -iE "${FILTER}" | \
-    sort -u)
+log_info "Discovering tests from: ${DISCOVER_LIST[*]}"
+[[ "${FILTER}" != "." ]] && log_info "Filter pattern: ${FILTER}"
+[[ -n "${EXCLUDE}" ]] && log_info "Exclude pattern: ${EXCLUDE}"
+
+# Collect the raw (unquoted) test names from every discovery suite.
+RAW_TESTS=()
+for dsuite in "${DISCOVER_LIST[@]}"; do
+    mapfile -t SUITE_TESTS < <("${TESTS_BIN}" run "${dsuite}" \
+        --provider "${TEST_PROVIDER}" \
+        --with-hypervisor-json="${HYPERVISOR_JSON}" \
+        --dry-run 2>&1 | \
+        grep '^"' | \
+        sed 's/^"\(.*\)"$/\1/')
+    if [[ ${#SUITE_TESTS[@]} -eq 0 ]]; then
+        log_error "Discovered 0 tests in suite '${dsuite}'."
+        log_error "Verify the suite name: ${TESTS_BIN} run ${dsuite} --dry-run"
+        exit 1
+    fi
+    log_info "  ${dsuite}: ${#SUITE_TESTS[@]} tests"
+    RAW_TESTS+=("${SUITE_TESTS[@]}")
+done
+
+# Apply the include filter, then the exclude filter, then dedup across suites.
+mapfile -t TESTS < <(
+    printf '%s\n' "${RAW_TESTS[@]}" \
+        | grep -iE "${FILTER}" \
+        | { if [[ -n "${EXCLUDE}" ]]; then grep -ivE "${EXCLUDE}"; else cat; fi; } \
+        | sort -u
+)
 
 if [[ ${#TESTS[@]} -eq 0 ]]; then
-    log_error "No tests found matching filter: ${FILTER}"
+    log_error "No tests left after filter='${FILTER}' exclude='${EXCLUDE}'"
     exit 1
 fi
 
 echo ""
-log_info "Found ${#TESTS[@]} tests in ${SUITE}"
+log_info "Found ${#TESTS[@]} tests (from: ${DISCOVER_LIST[*]})"
 echo ""
 
-# Reorder run-last tests to the END of the list. Some tests (e.g. node
-# replacement) reprovision a node from the base image and overwrite its patched
-# resource-agent; running them last keeps every earlier test exercising the build
-# under validation. The reordered list is later pinned via openshift-tests --file.
-ORDERED=false
-if [[ -n "${RUN_LAST}" ]]; then
-    MAIN_TESTS=()
-    LAST_TESTS=()
-    for test in "${TESTS[@]}"; do
-        if grep -qiE "${RUN_LAST}" <<< "${test}"; then
-            LAST_TESTS+=("${test}")
-        else
-            MAIN_TESTS+=("${test}")
-        fi
-    done
-    if [[ ${#LAST_TESTS[@]} -gt 0 ]]; then
-        TESTS=("${MAIN_TESTS[@]}" "${LAST_TESTS[@]}")
-        ORDERED=true
-        log_info "Ordering: ${#LAST_TESTS[@]} run-last test(s) moved to end (pattern: ${RUN_LAST})"
-        for test in "${LAST_TESTS[@]}"; do
-            log_info "  run-last: ${test}"
-        done
-        echo ""
-    else
-        log_warn "Run-last pattern matched no tests: ${RUN_LAST}"
-    fi
+# Decide whether to pin the exact set via --file. openshift-tests --file honors
+# the test SET (exact-match membership) but NOT the file's order -- origin
+# shuffles the surviving set with a hardcoded seed (cmd_runsuite.go: seed=42)
+# and exposes no order-preserving flag. So --file is used purely to constrain
+# WHICH tests run when the set is a curated union/subset that differs from
+# running ${SUITE} whole: i.e. we discovered from >1 suite, or we excluded tests.
+USE_FILE=false
+if [[ ${#DISCOVER_LIST[@]} -gt 1 || -n "${EXCLUDE}" ]]; then
+    USE_FILE=true
 fi
 
 if [[ "$LIST_ONLY" == "true" ]]; then
@@ -383,20 +397,41 @@ if [[ "${INTERACTIVE}" != "true" ]]; then
     setup_test_provider
 
     # Build the run selector.
-    #   - ORDERED: pin the exact test set AND order via --file. The file must
-    #     list names in the SAME double-quoted form that `openshift-tests
+    #   - USE_FILE: pin the exact test SET via --file (curated union/subset). The
+    #     file must list names in the SAME double-quoted form that `openshift-tests
     #     --dry-run` emits -- that is what --file matches against (canonical
     #     openshift/release pattern: `run <suite> --dry-run | ... | run <suite>
     #     -f -`). Our discovery strips the surrounding quotes for filtering and
-    #     display, so we re-add them when writing the order file. Bare names do
-    #     NOT match and the run aborts with "no tests to run".
+    #     display, so we re-add them when writing the set file. Bare names do NOT
+    #     match and the run aborts with "no tests to run". NOTE: --file pins the
+    #     SET, not the order (origin shuffles with a fixed seed).
     #   - else FILTER == ".": run the entire suite in its native order.
     #   - else: narrow the suite with --run.
-    if [[ "${ORDERED}" == "true" ]]; then
-        ORDER_FILE="${SESSION_DIR}/test-order.txt"
-        printf '"%s"\n' "${TESTS[@]}" > "${ORDER_FILE}"
-        RUN_ARGS=(--file "${ORDER_FILE}")
-        log_info "Pinning test order via --file (${#TESTS[@]} tests): ${ORDER_FILE}"
+    if [[ "${USE_FILE}" == "true" ]]; then
+        SET_FILE="${SESSION_DIR}/test-set.txt"
+        printf '"%s"\n' "${TESTS[@]}" > "${SET_FILE}"
+        RUN_ARGS=(--file "${SET_FILE}")
+        log_info "Pinning test set via --file (${#TESTS[@]} tests): ${SET_FILE}"
+
+        # Pre-flight: openshift-tests --file only reads quoted lines and
+        # strconv.Unquote-matches them EXACTLY against test names; a format
+        # mismatch silently matches nothing (match-function drops all tests ->
+        # "no tests to run"). This also catches a discovery suite whose tests
+        # are NOT present in the run suite ${SUITE}. Confirm the set file
+        # round-trips BEFORE committing to a long run, and fail fast with a clear
+        # message instead of burning a 60m timeout on an empty run.
+        preflight_count=$("${TESTS_BIN}" run "${SUITE}" \
+            --provider "${TEST_PROVIDER}" \
+            --with-hypervisor-json="${HYPERVISOR_JSON}" \
+            --file "${SET_FILE}" --dry-run 2>&1 | grep -c '^"' || true)
+        if [[ "${preflight_count}" -ne "${#TESTS[@]}" ]]; then
+            log_error "Pre-flight --file check matched ${preflight_count}/${#TESTS[@]} tests -- the set file did not round-trip through 'run ${SUITE} --file'."
+            log_error "Likely cause: a discovered test is not present in the run suite '${SUITE}' (use a superset suite like 'all'), or a name-quoting mismatch."
+            log_error "Set file: ${SET_FILE}"
+            log_error "Inspect raw output: ${TESTS_BIN} run ${SUITE} --provider '${TEST_PROVIDER}' --file '${SET_FILE}' --dry-run 2>&1 | head"
+            exit 1
+        fi
+        log_info "Pre-flight --file check OK: ${preflight_count}/${#TESTS[@]} tests match."
     elif [[ "${FILTER}" == "." ]]; then
         # No filter - run entire suite
         RUN_ARGS=()
@@ -566,13 +601,14 @@ else
 done
 fi
 
-# If this profile ran a node-replacement test (run-last), the reprovisioned node
-# may have reverted to a stock resource-agents build. Report the build on both
-# masters so the user can decide whether to re-patch. Non-fatal: never fail the
-# run over a diagnostic query.
-if [[ -n "${RUN_LAST}" ]]; then
+# Report the resource-agents build on both masters (mixed-build check). For
+# 'recovery' this catches a node-replacement test having reverted a master to a
+# stock RPM; for 'ra-verification' it confirms the two masters stayed on the same
+# build throughout (they should, since node replacement was excluded). Non-fatal:
+# never fail the run over a diagnostic query.
+if [[ "${GATHER_RA}" == "true" ]]; then
     echo ""
-    log_info "Gathering resource-agents versions from both masters (post node-replacement check)..."
+    log_info "Gathering resource-agents versions from both masters (mixed-build check)..."
     "${SCRIPT_DIR}/gather-resource-agent-versions.sh" || \
         log_warn "Could not gather resource-agents versions (see errors above)"
 fi

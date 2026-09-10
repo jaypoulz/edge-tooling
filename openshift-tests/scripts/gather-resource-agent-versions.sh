@@ -99,13 +99,47 @@ M1="$(query_node master-1 "${MASTER_1_IP}")"
 printf '%s\n%s\n' "${M0}" "${M1}" | column -t -s $'\t'
 echo ""
 
-# Warn if the two nodes disagree on the resource-agents build (mixed build).
+# Report whether the two masters disagree on the resource-agents build.
+#
+# A "mixed build" (differing version strings) is NOT automatically a problem.
+# The hazard is specifically one master on the STOCK (unpatched) resource-agents
+# while the other carries the patched podman-etcd OCF agent -- that skew is what
+# produces the dual-force-new-cluster wedge. It typically happens when a node is
+# reprovisioned (e.g. the node-replacement recovery test) and loses its layered
+# RPM. If BOTH masters carry a PATCHED resource-agents RPM, differing versions
+# are SAFE: the fix is present on both, so recovery behaves correctly.
+#
+# rpm -q alone cannot always tell patched from stock. Set PATCHED_RA_MARKER to a
+# substring unique to your patched build (e.g. the scratch-build release tag) to
+# get a definitive patched/stock verdict; otherwise this prints guidance.
 V0="$(printf '%s' "${M0}" | cut -f3)"
 V1="$(printf '%s' "${M1}" | cut -f3)"
+PATCHED_RA_MARKER="${PATCHED_RA_MARKER:-}"
+
+ra_is_patched() {
+    # Returns 0 (patched) only when PATCHED_RA_MARKER is set and present in the
+    # version string. Without a marker we cannot classify, so return 1 (unknown).
+    [[ -n "${PATCHED_RA_MARKER}" && "$1" == *"${PATCHED_RA_MARKER}"* ]]
+}
+
 if [[ "${V0}" == resource-agents-* && "${V1}" == resource-agents-* && "${V0}" != "${V1}" ]]; then
-    echo "WARNING: masters are running DIFFERENT resource-agents builds (mixed build)."
-    echo "         A node was likely reprovisioned and lost its patched RPM."
-    echo "         Re-patch the reverted node before trusting further recovery results."
+    echo "NOTE: masters report DIFFERENT resource-agents builds (mixed build):"
+    echo "        master-0: ${V0}"
+    echo "        master-1: ${V1}"
+    if [[ -n "${PATCHED_RA_MARKER}" ]]; then
+        if ra_is_patched "${V0}" && ra_is_patched "${V1}"; then
+            echo "SAFE: both masters carry the PATCHED resource-agents (marker '${PATCHED_RA_MARKER}')."
+            echo "      Differing version strings are fine -- the podman-etcd OCF fix is on both."
+        else
+            echo "WARNING: at least one master is NOT on the patched build (marker '${PATCHED_RA_MARKER}')."
+            echo "         A node likely reverted to STOCK resource-agents (e.g. after reprovision)."
+            echo "         Re-patch the stock master before trusting further recovery results."
+        fi
+    else
+        echo "      This is only UNSAFE if one master is on the STOCK (unpatched) build."
+        echo "      If BOTH carry the patched podman-etcd OCF agent, a mixed build is SAFE."
+        echo "      To classify automatically, re-run with PATCHED_RA_MARKER=<patched-build-tag>."
+    fi
 elif [[ "${V0}" == resource-agents-* && "${V0}" == "${V1}" ]]; then
     echo "OK: both masters report the same resource-agents build."
 fi
