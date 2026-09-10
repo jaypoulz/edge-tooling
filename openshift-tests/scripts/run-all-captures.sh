@@ -8,7 +8,7 @@
 #   - OVN chassis trace (timestamped): API + host OVS + SB Chassis + virsh dumpxml summary + l3-gateway-config + nnid tail + ovn-k log grep (capture-ovn-chassis-trace.sh)
 #   - OVN follow streams (timestamped oc logs -f): all ovnkube-node, one ovnkube-control-plane pod, network-node-identity (if present)
 #   - Bare Metal Operator pod logs (oc logs)
-#   - Cluster etcd operator (CEO) pod logs (oc logs)
+#   - Cluster etcd operator (CEO) pod logs, ALL incarnations (capture-ceo.sh: poll-discovers pods, survives reschedules)
 #   - Machine API / CAPI controller logs (capture-machine-api.sh: MAO, machine-api-controllers, CAPI operator)
 #   - Machine API snapshots (capture-machine-api-snapshot.sh: Machine, BMH, events, clusteroperator machine-api)
 #   - TNF fencing job pod logs (capture-fencing-job.sh)
@@ -113,7 +113,7 @@ if [[ -n "${KUBECONFIG:-}" ]]; then
 
     setsid bash "${SCRIPT_DIR}/capture-network-node-identity-follow-logs.sh" >> "${LOG_DIR}/nnid-follow-${TIMESTAMP}.log" 2>&1 &
     echo $! >> "${PID_FILE}"
-    echo "  nnid-follow -> ${LOG_DIR}/nnid-follow-${TIMESTAMP}.log (PID $!) [exits if no network-node-identity deployment]"
+    echo "  nnid-follow -> ${LOG_DIR}/nnid-follow-${TIMESTAMP}.log (PID $!) [polls for network-node-identity deployment, reconnects]"
 else
     echo "  ovn-k / nnid follow -> skipped (KUBECONFIG not set)"
 fi
@@ -145,11 +145,16 @@ else
     fi
 fi
 
-# 6) CEO (optional, same as capture-ceo-logs.sh)
+# 6) CEO (all pod incarnations — survives reschedules; see capture-ceo.sh)
+# The CEO is a single-replica Deployment, but its pod is recreated repeatedly during
+# disruptive recovery tests (rescheduled between control-plane nodes). A plain
+# `oc logs deployment/etcd-operator -f` follows only the first pod and never reconnects,
+# so the acting healthcheck-controller leader is easily missed. capture-ceo.sh discovers
+# pods on a poll loop and streams every incarnation to its own file.
 if [[ -n "${KUBECONFIG:-}" ]] && oc get deployment/etcd-operator -n openshift-etcd-operator &>/dev/null; then
-    setsid bash -c "oc logs -n openshift-etcd-operator deployment/etcd-operator -f --timestamps 2>&1 | tee -a '${LOG_DIR}/ceo-${TIMESTAMP}.log'" >> "${LOG_DIR}/ceo-${TIMESTAMP}.out" 2>&1 &
+    setsid bash "${SCRIPT_DIR}/capture-ceo.sh" >> "${LOG_DIR}/ceo-streams-${TIMESTAMP}.out" 2>&1 &
     echo $! >> "${PID_FILE}"
-    echo "  CEO logs        -> ${LOG_DIR}/ceo-${TIMESTAMP}.log (PID $!)"
+    echo "  CEO logs        -> ${LOG_DIR}/ceo-<pod>-${TIMESTAMP}.log (PID $!) [poll=${CEO_POLL_SEC:-10}s, all incarnations]"
 else
     echo "  CEO logs        -> skipped (KUBECONFIG not set or etcd-operator not found)"
 fi

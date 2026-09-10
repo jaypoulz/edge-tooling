@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRATCH_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="${CAPTURE_LOG_DIR:-${SCRATCH_ROOT}/runs}"
 TIMESTAMP="${CAPTURE_TIMESTAMP:-$(date +%Y%m%d-%H%M%S)}"
+RECONNECT_SLEEP="${MACHINE_API_RECONNECT_SLEEP:-15}"
 mkdir -p "${LOG_DIR}"
 
 if [[ -z "${KUBECONFIG:-}" ]]; then
@@ -41,8 +42,18 @@ stream_deploy() {
         return 0
     fi
 
-    echo "capture-machine-api: streaming ${ns}/deployment/${dep} -> ${f}"
-    oc logs -n "${ns}" "deployment/${dep}" -f --timestamps >>"${f}" 2>&1 &
+    echo "capture-machine-api: streaming ${ns}/deployment/${dep} -> ${f} (reconnects every ${RECONNECT_SLEEP}s)"
+    # `oc logs deployment/X -f` binds to the pod behind the deployment at connect time and
+    # ends when that pod is deleted (operator restart / rollout during recovery tests).
+    # Loop so the stream re-attaches to the new pod. Process-group kill (stop-all-captures)
+    # tears down this subshell and its oc child together.
+    (
+        while true; do
+            oc logs -n "${ns}" "deployment/${dep}" -f --timestamps >>"${f}" 2>&1 || true
+            echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) ${ns}/deployment/${dep} stream ended; reconnecting in ${RECONNECT_SLEEP}s ===" >>"${f}"
+            sleep "${RECONNECT_SLEEP}"
+        done
+    ) &
     pids+=($!)
 }
 

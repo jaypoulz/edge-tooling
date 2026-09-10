@@ -33,7 +33,10 @@ MASTER_1_IP="${MASTER_1_IP:-}"
 VIRSH_LEASE_NETWORK="${VIRSH_LEASE_NETWORK:-ostestbm}"
 RECONNECT_SLEEP="${COROSYNC_RECONNECT_SLEEP:-15}"
 
-HYPERVISOR_SSH=(ssh -o "ConnectTimeout=12" -o "StrictHostKeyChecking=no" -i "${SSH_KEY_PATH}" "${SSH_USER}@${HYPERVISOR_IP}")
+# Keepalives + BatchMode so a hung or half-open hop returns control to the reconnect
+# loop (e.g. when a node is ungracefully killed) instead of blocking indefinitely.
+HYPERVISOR_SSH=(ssh -o "ConnectTimeout=12" -o "ServerAliveInterval=15" -o "ServerAliveCountMax=3" -o "BatchMode=yes" -o "StrictHostKeyChecking=no" -i "${SSH_KEY_PATH}" "${SSH_USER}@${HYPERVISOR_IP}")
+INNER_SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
 
 resolve_master_ip_from_leases() {
     local node_name="$1"
@@ -54,16 +57,17 @@ resolve_master_ip_from_leases() {
         '
 }
 
+# Honor an explicit override IP if provided; otherwise resolve from DHCP leases and
+# keep re-resolving in the reconnect loop (a rebooted node may get a new lease).
 if [[ "${NODE}" == "master-0" ]]; then
-    if [[ -z "${MASTER_0_IP}" ]]; then
-        MASTER_0_IP="$(resolve_master_ip_from_leases "master-0" || true)"
-    fi
-    MASTER_IP="${MASTER_0_IP}"
+    EXPLICIT_IP="${MASTER_0_IP}"
 else
-    if [[ -z "${MASTER_1_IP}" ]]; then
-        MASTER_1_IP="$(resolve_master_ip_from_leases "master-1" || true)"
-    fi
-    MASTER_IP="${MASTER_1_IP}"
+    EXPLICIT_IP="${MASTER_1_IP}"
+fi
+if [[ -n "${EXPLICIT_IP}" ]]; then
+    MASTER_IP="${EXPLICIT_IP}"
+else
+    MASTER_IP="$(resolve_master_ip_from_leases "${NODE}" || true)"
 fi
 
 if [[ -z "${HYPERVISOR_IP}" ]]; then
@@ -71,8 +75,7 @@ if [[ -z "${HYPERVISOR_IP}" ]]; then
     exit 1
 fi
 if [[ -z "${MASTER_IP}" ]]; then
-    echo "Error: could not resolve ${NODE} IP from virsh net-dhcp-leases ${VIRSH_LEASE_NETWORK}; set MASTER_0_IP/MASTER_1_IP explicitly."
-    exit 1
+    echo "Warning: could not resolve ${NODE} IP yet from virsh net-dhcp-leases ${VIRSH_LEASE_NETWORK}; will keep retrying (set MASTER_0_IP/MASTER_1_IP to override)."
 fi
 
 echo "Tailing corosync journal on ${NODE} (${MASTER_SSH_USER}@${MASTER_IP}) -> ${LOG_FILE}"
@@ -83,12 +86,27 @@ echo ""
 trap 'exit 0' INT TERM
 
 while true; do
-    echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) connected to ${NODE} ===" >> "${LOG_FILE}"
-    if "${HYPERVISOR_SSH[@]}" \
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -o ServerAliveInterval=30 ${MASTER_SSH_USER}@${MASTER_IP} 'sudo journalctl -u corosync -f -n 200 -o short-iso'" \
-        >> "${LOG_FILE}" 2>&1; then
-        :
+    # Re-resolve the lease each iteration unless an explicit IP was given: after a
+    # reboot the node may return on a different DHCP address, and a stale IP would
+    # never reconnect. Keep the last known IP if resolution transiently fails.
+    if [[ -z "${EXPLICIT_IP}" ]]; then
+        new_ip="$(resolve_master_ip_from_leases "${NODE}" || true)"
+        if [[ -n "${new_ip}" && "${new_ip}" != "${MASTER_IP}" ]]; then
+            echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) ${NODE} IP changed ${MASTER_IP:-none} -> ${new_ip} ===" >> "${LOG_FILE}"
+            MASTER_IP="${new_ip}"
+        fi
     fi
+
+    if [[ -z "${MASTER_IP}" ]]; then
+        echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) ${NODE} IP unresolved, retrying in ${RECONNECT_SLEEP}s ===" >> "${LOG_FILE}"
+        sleep "${RECONNECT_SLEEP}"
+        continue
+    fi
+
+    echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) connected to ${NODE} (${MASTER_IP}) ===" >> "${LOG_FILE}"
+    "${HYPERVISOR_SSH[@]}" \
+        "ssh ${INNER_SSH_OPTS} ${MASTER_SSH_USER}@${MASTER_IP} 'sudo journalctl -u corosync -f -n 200 -o short-iso'" \
+        >> "${LOG_FILE}" 2>&1 || true
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) disconnected from ${NODE}, reconnecting in ${RECONNECT_SLEEP}s ===" >> "${LOG_FILE}"
     sleep "${RECONNECT_SLEEP}"
 done
