@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #
 # Clean up old test runs from scratch/runs directory
 #

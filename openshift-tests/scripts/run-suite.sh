@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #
 # Test suite runner
 #
@@ -38,6 +38,7 @@ PROFILE=""
 SUITE_SET=false
 FILTER_SET=false
 RUN_MODE="run"
+RUN_LAST=""
 UPGRADE_TO_IMAGE="${UPGRADE_TO_IMAGE:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -154,6 +155,7 @@ if [[ -n "${PROFILE}" ]]; then
         exit 1
     fi
     RUN_MODE="${PROFILE_MODE}"
+    RUN_LAST="${PROFILE_RUN_LAST:-}"
     [[ "${SUITE_SET}" == "false" ]] && SUITE="${PROFILE_SUITE}"
     if [[ "${FILTER_SET}" == "false" && -n "${PROFILE_FILTER}" ]]; then
         FILTER="${PROFILE_FILTER}"
@@ -285,6 +287,34 @@ echo ""
 log_info "Found ${#TESTS[@]} tests in ${SUITE}"
 echo ""
 
+# Reorder run-last tests to the END of the list. Some tests (e.g. node
+# replacement) reprovision a node from the base image and overwrite its patched
+# resource-agent; running them last keeps every earlier test exercising the build
+# under validation. The reordered list is later pinned via openshift-tests --file.
+ORDERED=false
+if [[ -n "${RUN_LAST}" ]]; then
+    MAIN_TESTS=()
+    LAST_TESTS=()
+    for test in "${TESTS[@]}"; do
+        if grep -qiE "${RUN_LAST}" <<< "${test}"; then
+            LAST_TESTS+=("${test}")
+        else
+            MAIN_TESTS+=("${test}")
+        fi
+    done
+    if [[ ${#LAST_TESTS[@]} -gt 0 ]]; then
+        TESTS=("${MAIN_TESTS[@]}" "${LAST_TESTS[@]}")
+        ORDERED=true
+        log_info "Ordering: ${#LAST_TESTS[@]} run-last test(s) moved to end (pattern: ${RUN_LAST})"
+        for test in "${LAST_TESTS[@]}"; do
+            log_info "  run-last: ${test}"
+        done
+        echo ""
+    else
+        log_warn "Run-last pattern matched no tests: ${RUN_LAST}"
+    fi
+fi
+
 if [[ "$LIST_ONLY" == "true" ]]; then
     for test in "${TESTS[@]}"; do
         echo "  - ${test}"
@@ -352,8 +382,22 @@ if [[ "${INTERACTIVE}" != "true" ]]; then
     # Setup test provider
     setup_test_provider
 
-    # Build --run regex from filter pattern
-    if [[ "${FILTER}" == "." ]]; then
+    # Build the run selector.
+    #   - ORDERED: pin the exact test set AND order via --file. The file must
+    #     list names in the SAME double-quoted form that `openshift-tests
+    #     --dry-run` emits -- that is what --file matches against (canonical
+    #     openshift/release pattern: `run <suite> --dry-run | ... | run <suite>
+    #     -f -`). Our discovery strips the surrounding quotes for filtering and
+    #     display, so we re-add them when writing the order file. Bare names do
+    #     NOT match and the run aborts with "no tests to run".
+    #   - else FILTER == ".": run the entire suite in its native order.
+    #   - else: narrow the suite with --run.
+    if [[ "${ORDERED}" == "true" ]]; then
+        ORDER_FILE="${SESSION_DIR}/test-order.txt"
+        printf '"%s"\n' "${TESTS[@]}" > "${ORDER_FILE}"
+        RUN_ARGS=(--file "${ORDER_FILE}")
+        log_info "Pinning test order via --file (${#TESTS[@]} tests): ${ORDER_FILE}"
+    elif [[ "${FILTER}" == "." ]]; then
         # No filter - run entire suite
         RUN_ARGS=()
     else
@@ -520,6 +564,17 @@ else
         esac
     fi
 done
+fi
+
+# If this profile ran a node-replacement test (run-last), the reprovisioned node
+# may have reverted to a stock resource-agents build. Report the build on both
+# masters so the user can decide whether to re-patch. Non-fatal: never fail the
+# run over a diagnostic query.
+if [[ -n "${RUN_LAST}" ]]; then
+    echo ""
+    log_info "Gathering resource-agents versions from both masters (post node-replacement check)..."
+    "${SCRIPT_DIR}/gather-resource-agent-versions.sh" || \
+        log_warn "Could not gather resource-agents versions (see errors above)"
 fi
 
 echo ""

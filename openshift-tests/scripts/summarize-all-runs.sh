@@ -1,5 +1,4 @@
-#!/bin/bash
-#
+#!/usr/bin/bash
 # Summarize all test runs
 #
 

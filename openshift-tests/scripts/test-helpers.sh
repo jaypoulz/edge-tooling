@@ -260,12 +260,19 @@ setup_monitor_configuration() {
 # Test Profiles
 # ============================================================================
 # A profile is a friendly name that maps to a test target:
-#   PROFILE_SUITE  - openshift-tests suite to run/list
-#   PROFILE_FILTER - default name/label regex to narrow the suite ("" = none)
-#   PROFILE_MODE   - "run" (openshift-tests run <suite>) or
-#                    "upgrade" (openshift-tests run-upgrade, needs --to-image)
+#   PROFILE_SUITE    - openshift-tests suite to run/list
+#   PROFILE_FILTER   - default name/label regex to narrow the suite ("" = none)
+#   PROFILE_MODE     - "run" (openshift-tests run <suite>) or
+#                      "upgrade" (openshift-tests run-upgrade, needs --to-image)
+#   PROFILE_RUN_LAST - regex of tests to force to the END of the run order
+#                      ("" = none). Used to keep destructive tests (e.g. node
+#                      replacement, which reprovisions a node and overwrites its
+#                      resource-agent) from clobbering the build the earlier tests
+#                      are exercising. Callers reorder the discovered test list so
+#                      matching tests run last, then pass the ordered list to
+#                      openshift-tests via --file to pin the order.
 #
-# Callers read those three vars after a successful `resolve_profile <name>`.
+# Callers read those vars after a successful `resolve_profile <name>`.
 # --suite / --filter on the command line always override the profile defaults.
 #
 # Suites marked (runtime-verify) below should be confirmed against the target
@@ -285,13 +292,15 @@ resolve_profile() {
     PROFILE_SUITE=""
     PROFILE_FILTER=""
     PROFILE_MODE="run"
+    PROFILE_RUN_LAST=""
 
-    # PROFILE_SUITE/PROFILE_FILTER/PROFILE_MODE are consumed by scripts that
-    # source this file (e.g. list-tests.sh, run-suite.sh) after calling resolve_profile.
+    # PROFILE_SUITE/PROFILE_FILTER/PROFILE_MODE/PROFILE_RUN_LAST are consumed by
+    # scripts that source this file (e.g. list-tests.sh, run-suite.sh) after
+    # calling resolve_profile.
     # shellcheck disable=SC2034
     case "${profile}" in
         e2e)           PROFILE_SUITE="openshift/conformance/parallel" ;;
-        recovery)      PROFILE_SUITE="openshift/two-node" ;;
+        recovery)      PROFILE_SUITE="openshift/two-node"; PROFILE_RUN_LAST="needing manual recovery is replaced" ;;
         dualreplica)   PROFILE_SUITE="all"; PROFILE_FILTER="DualReplica" ;;
         cert-rotation) PROFILE_SUITE="openshift/etcd/certrotation" ;;
         upgrade)       PROFILE_SUITE="all"; PROFILE_MODE="upgrade" ;;

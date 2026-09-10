@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #
 # Extract openshift-tests binary from current cluster payload
 #
